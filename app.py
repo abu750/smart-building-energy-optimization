@@ -158,3 +158,130 @@ with st.expander("Model transparency and scientific limitations (V3)"):
 - Optimization results are precomputed. Sidebar filtering does not perform a new NSGA-II run.
 - EnergyPlus insulation levels are separate simulations. Level 3 may exceed the investment constraint for many configurations.
 - Results must not be presented as measured savings or as experimentally validated performance.""")
+
+
+# ===== V4 Updated | Restorable interactive design studio =====
+st.divider()
+st.header("Interactive design studio")
+st.caption("Experiment with settings without changing or overwriting the 97 saved NSGA-II solutions.")
+
+# References always come from the full original results, not sidebar filters.
+best_energy = df.loc[df["Electricity_kWh_year"].idxmin()]
+best_cost = df.loc[df["Annual_Cost_SAR_year"].idxmin()]
+BASELINE_DESIGN = {"cop": 3.5, "lpd": 10.0, "temp": 24.0, "bms": False, "insulation": 1}
+DESIGN_KEYS = ("cop", "lpd", "temp", "bms", "insulation")
+
+def design_from_row(row):
+    return {"cop": float(row["Cooling_COP"]), "lpd": float(row["Lighting_W_m2"]),
+            "temp": float(row["Thermostat_C"]), "bms": bool(int(row["Smart_BMS"])),
+            "insulation": int(row["Insulation_Level"])}
+
+def load_preset(values, label):
+    for k in DESIGN_KEYS:
+        st.session_state["studio_" + k] = values[k]
+    st.session_state["studio_preset"] = label
+    st.session_state.pop("studio_result", None)
+
+for k, v in BASELINE_DESIGN.items():
+    if "studio_" + k not in st.session_state:
+        st.session_state["studio_" + k] = v
+
+st.markdown("**Restore a saved design**")
+b1, b2, b3 = st.columns(3)
+with b1:
+    if st.button("Best energy solution", use_container_width=True):
+        load_preset(design_from_row(best_energy), "Minimum electricity — saved NSGA-II solution")
+with b2:
+    if st.button("Best economic solution", use_container_width=True):
+        load_preset(design_from_row(best_cost), "Minimum annualized cost — saved NSGA-II solution")
+with b3:
+    if st.button("Reset to baseline", use_container_width=True):
+        load_preset(BASELINE_DESIGN, "Baseline design settings")
+
+if "studio_preset" in st.session_state:
+    st.caption("Loaded: " + st.session_state["studio_preset"])
+
+with st.form("studio_form"):
+    d1, d2, d3 = st.columns(3)
+    with d1:
+        cop = st.slider("Cooling COP", 2.5, 5.0, step=0.0001, format="%.4f", key="studio_cop")
+        lpd = st.slider("Lighting density (W/m²)", 5.0, 10.0, step=0.0001, format="%.4f", key="studio_lpd")
+    with d2:
+        temp = st.slider("Cooling setpoint (°C)", 22.0, 25.0, step=0.0001, format="%.4f", key="studio_temp")
+        bms = st.checkbox("Smart BMS enabled", key="studio_bms")
+    with d3:
+        insulation = st.selectbox("Insulation level", [1, 2, 3], key="studio_insulation",
+                                  format_func=lambda n: {1: "Level 1 — baseline", 2: "Level 2 — 5 cm", 3: "Level 3 — 10 cm"}[n])
+    evaluate = st.form_submit_button("Evaluate and compare", type="primary")
+
+st.caption("The baseline preset is COP 3.5, lighting 10 W/m², setpoint 24°C, BMS off, insulation level 1. It is a reference configuration, not an optimized result.")
+
+if evaluate:
+    inputs = {"cop": cop, "lpd": lpd, "temp": temp, "bms": bms, "insulation": insulation}
+    try:
+        from evaluate_solution_AUDIT import evaluate_solution as audited_evaluator
+    except (ImportError, SyntaxError, OSError) as exc:
+        audited_evaluator = None
+    if audited_evaluator is not None:
+        try:
+            import math
+            values = audited_evaluator(cop, lpd, temp, int(bms), insulation)
+            energy, cost, co2, investment = map(float, values[:4])
+            if not all(math.isfinite(v) for v in (energy, cost, co2, investment)):
+                raise ValueError("Non-finite result returned")
+            st.session_state["studio_result"] = {
+                "mode": "estimated", "inputs": inputs,
+                "energy": energy, "cost": cost, "co2": co2, "investment": investment}
+        except Exception as exc:
+            st.session_state["studio_result"] = {"mode": "error", "message": str(exc)}
+    else:
+        # No surrogate: only retrieve a recorded design, without presenting it as a prediction.
+        distance = (((df["Cooling_COP"] - cop) / 2.5) ** 2
+                    + ((df["Lighting_W_m2"] - lpd) / 5.0) ** 2
+                    + ((df["Thermostat_C"] - temp) / 3.0) ** 2
+                    + (df["Smart_BMS"] - int(bms)) ** 2
+                    + ((df["Insulation_Level"] - insulation) / 2.0) ** 2) ** 0.5
+        nearest = df.loc[distance.idxmin()]
+        st.session_state["studio_result"] = {
+            "mode": "nearest", "inputs": inputs,
+            "energy": float(nearest["Electricity_kWh_year"]),
+            "cost": float(nearest["Annual_Cost_SAR_year"]),
+            "co2": float(nearest["CO2_kg_year"]),
+            "investment": float(nearest["Initial_Investment_SAR"]),
+            "nearest_inputs": design_from_row(nearest)}
+
+result = st.session_state.get("studio_result")
+if result:
+    if result["mode"] == "error":
+        st.error("The audited evaluator could not calculate this design: " + result["message"])
+    else:
+        if result["mode"] == "nearest":
+            st.warning("The audited evaluator is not installed on this website. Values below belong to the **nearest saved NSGA-II solution**, NOT to your custom settings. No new calculation was made.")
+            st.write("Nearest recorded design:", result["nearest_inputs"])
+        else:
+            st.success("Calculated using the audited assumption-based surrogate. This is NOT a new EnergyPlus simulation or NSGA-II run.")
+        st.subheader("Your design versus the saved energy optimum")
+        reference = best_energy
+        comparison = pd.DataFrame([
+            {"Design": "Your evaluated design" if result["mode"] == "estimated" else "Nearest recorded solution",
+             "Electricity (kWh/year)": result["energy"], "Annualized cost (SAR/year)": result["cost"],
+             "CO₂ (kg/year)": result["co2"], "Investment (SAR)": result["investment"]},
+            {"Design": "Saved best energy solution", "Electricity (kWh/year)": float(reference["Electricity_kWh_year"]),
+             "Annualized cost (SAR/year)": float(reference["Annual_Cost_SAR_year"]),
+             "CO₂ (kg/year)": float(reference["CO2_kg_year"]),
+             "Investment (SAR)": float(reference["Initial_Investment_SAR"])}
+        ])
+        st.dataframe(comparison.round(2), hide_index=True, use_container_width=True)
+        st.plotly_chart(px.bar(comparison, x="Design", y="Electricity (kWh/year)",
+                               color="Design", title="Electricity comparison"), use_container_width=True)
+        if result["investment"] > 1_500_000:
+            st.warning("This design exceeds the 1,500,000 SAR initial investment limit.")
+        st.caption("Reference optimum is read from the original AUDIT CSV, independent of sidebar filters. The saved optimization results are never overwritten.")
+
+with st.expander("How saved solutions and custom evaluation work"):
+    st.markdown("""- The **Best energy** and **Best economic** buttons load the original recorded decision variables into the controls.
+- **Reset to baseline** restores the baseline inputs. It does not modify the original optimization file.
+- **Evaluate and compare** calculates new estimates only when `evaluate_solution_AUDIT.py` is available and compatible.
+- Without the evaluator, the app shows a **nearest saved solution** and clearly labels it as a lookup, not a custom prediction.
+- Saved optimum values come from `NSGA2_Pareto_AUDIT.csv`. No new optimization or EnergyPlus simulation runs here.
+- The comparison uses annualized cost for optimized solutions; baseline operating cost excludes capital investment.""")
