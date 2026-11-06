@@ -87,3 +87,42 @@ with st.expander("Methods, assumptions and limitations"):
 - CO₂ is proportional to electricity in this model, so it is not an independent optimization objective.
 - No measured building data were available for field calibration; results are simulation-based, not experimentally validated.
 - The chart shows **precomputed solutions**, not new optimization runs when filters change.""")
+
+# ===== EnergyPlus Insulation Comparison (V2) =====
+st.divider()
+st.header("EnergyPlus Thermal Performance")
+st.caption("Annual simulated thermal loads — not direct HVAC electricity consumption.")
+
+insulation = pd.DataFrame({
+    "Insulation": ["Level 1 - Baseline", "Level 2 - 5 cm", "Level 3 - 10 cm"],
+    "Cooling_GJ": [3236.12, 2351.68, 2231.41],
+    "Heating_GJ": [138.52, 6.85, 1.23]
+})
+
+insulation["Cooling_Reduction_pct"] = (
+    (1 - insulation["Cooling_GJ"] / 3236.12) * 100
+)
+insulation["Heating_Reduction_pct"] = (
+    (1 - insulation["Heating_GJ"] / 138.52) * 100
+)
+
+fig_insulation = px.bar(
+    insulation,
+    x="Insulation",
+    y=["Cooling_GJ", "Heating_GJ"],
+    barmode="group",
+    labels={"value": "Annual thermal load (GJ)", "variable": "Load type"},
+    title="Effect of Insulation on Annual Heating and Cooling Loads"
+)
+st.plotly_chart(fig_insulation, use_container_width=True)
+
+st.dataframe(
+    insulation.round(2),
+    use_container_width=True,
+    hide_index=True
+)
+
+st.info(
+    "Results are based on EnergyPlus simulations. "
+    "The baseline and insulation scenarios use the same building and weather conditions."
+)
