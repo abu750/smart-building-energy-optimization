@@ -88,41 +88,73 @@ with st.expander("Methods, assumptions and limitations"):
 - No measured building data were available for field calibration; results are simulation-based, not experimentally validated.
 - The chart shows **precomputed solutions**, not new optimization runs when filters change.""")
 
-# ===== EnergyPlus Insulation Comparison (V2) =====
+
+# ===== V3 | Research and engineering analysis =====
 st.divider()
-st.header("EnergyPlus Thermal Performance")
-st.caption("Annual simulated thermal loads — not direct HVAC electricity consumption.")
+st.header("Research overview")
+st.write("Simulation-based case study of a hypothetical 10,000 m² university building in Sakakah, Al Jouf, Saudi Arabia. Results are not field-calibrated measurements.")
+with st.expander("Research workflow", expanded=True):
+    st.markdown("**Building geometry and weather** → **EnergyPlus thermal-load simulations** → **Assumption-based electricity and cost model** → **NSGA-II multi-objective search** → **Feasible solution analysis**")
+    st.caption("Cooling and heating results from IdealLoadsAirSystem represent thermal demand, not measured HVAC electricity.")
 
-insulation = pd.DataFrame({
-    "Insulation": ["Level 1 - Baseline", "Level 2 - 5 cm", "Level 3 - 10 cm"],
-    "Cooling_GJ": [3236.12, 2351.68, 2231.41],
-    "Heating_GJ": [138.52, 6.85, 1.23]
+st.header("EnergyPlus thermal performance")
+st.caption("Annual heating and cooling thermal loads (GJ/year) from three EnergyPlus insulation simulations.")
+thermal = pd.DataFrame({
+    "Insulation": ["Level 1 — baseline", "Level 2 — 5 cm", "Level 3 — 10 cm"],
+    "Cooling (GJ/year)": [3236.12, 2351.68, 2231.41],
+    "Heating (GJ/year)": [138.52, 6.85, 1.23],
 })
+thermal["Cooling reduction (%)"] = (1 - thermal["Cooling (GJ/year)"] / 3236.12) * 100
+thermal["Heating reduction (%)"] = (1 - thermal["Heating (GJ/year)"] / 138.52) * 100
+left, right = st.columns(2)
+with left:
+    st.plotly_chart(px.bar(thermal, x="Insulation", y="Cooling (GJ/year)", title="Cooling thermal load", color="Insulation"), use_container_width=True)
+with right:
+    st.plotly_chart(px.bar(thermal, x="Insulation", y="Heating (GJ/year)", title="Heating thermal load", color="Insulation"), use_container_width=True)
+st.dataframe(thermal.round(2), use_container_width=True, hide_index=True)
+st.caption("Thermal data are summarized from completed EnergyPlus simulations; no EnergyPlus runs occur on this website.")
 
-insulation["Cooling_Reduction_pct"] = (
-    (1 - insulation["Cooling_GJ"] / 3236.12) * 100
-)
-insulation["Heating_Reduction_pct"] = (
-    (1 - insulation["Heating_GJ"] / 138.52) * 100
-)
+st.header("Scenario comparison")
+st.caption("Compare precomputed feasible optimization solutions; filters do not run NSGA-II again.")
+min_energy = filtered.loc[filtered["Electricity_kWh_year"].idxmin()]
+min_cost = filtered.loc[filtered["Annual_Cost_SAR_year"].idxmin()]
+compare = pd.DataFrame([
+    {"Scenario": "Baseline (surrogate)", "Electricity (kWh/year)": BASELINE_ENERGY, "Annual total cost (SAR/year)": BASELINE_COST, "CO₂ (kg/year)": BASELINE_CO2, "Investment (SAR)": 0.0},
+    {"Scenario": "Minimum electricity", "Electricity (kWh/year)": min_energy["Electricity_kWh_year"], "Annual total cost (SAR/year)": min_energy["Annual_Cost_SAR_year"], "CO₂ (kg/year)": min_energy["CO2_kg_year"], "Investment (SAR)": min_energy["Initial_Investment_SAR"]},
+    {"Scenario": "Minimum annualized cost", "Electricity (kWh/year)": min_cost["Electricity_kWh_year"], "Annual total cost (SAR/year)": min_cost["Annual_Cost_SAR_year"], "CO₂ (kg/year)": min_cost["CO2_kg_year"], "Investment (SAR)": min_cost["Initial_Investment_SAR"]},
+])
+st.dataframe(compare.round(2), use_container_width=True, hide_index=True)
+st.plotly_chart(px.bar(compare, x="Scenario", y="Electricity (kWh/year)", color="Scenario", title="Annual electricity comparison"), use_container_width=True)
 
-fig_insulation = px.bar(
-    insulation,
-    x="Insulation",
-    y=["Cooling_GJ", "Heating_GJ"],
-    barmode="group",
-    labels={"value": "Annual thermal load (GJ)", "variable": "Load type"},
-    title="Effect of Insulation on Annual Heating and Cooling Loads"
-)
-st.plotly_chart(fig_insulation, use_container_width=True)
+st.header("Economic assessment")
+st.caption("Investment appraisal uses the study's assumed electricity tariff and a capital recovery factor; these are scenario assumptions, not verified market quotations.")
+tariff = st.number_input("Electricity tariff (SAR/kWh) — sensitivity", min_value=0.01, max_value=2.0, value=0.32, step=0.01)
+interest = st.number_input("Annual discount rate (%)", min_value=0.0, max_value=30.0, value=5.0, step=0.5)
+life = st.number_input("Investment lifetime (years)", min_value=1, max_value=40, value=10, step=1)
+rate = interest / 100
+crf = rate * (1 + rate) ** life / ((1 + rate) ** life - 1) if rate else 1 / life
+annual_operating = float(selected["Electricity_kWh_year"]) * tariff
+annualized_capex = float(selected["Initial_Investment_SAR"]) * crf
+annual_total = annual_operating + annualized_capex
+baseline_operating = BASELINE_ENERGY * tariff
+annual_saving = baseline_operating - annual_operating
+simple_payback = float(selected["Initial_Investment_SAR"]) / annual_saving if annual_saving > 0 else None
+x, y, z = st.columns(3)
+x.metric("Estimated annual operating cost (SAR)", f"{annual_operating:,.0f}")
+y.metric("Estimated annualized investment (SAR)", f"{annualized_capex:,.0f}")
+z.metric("Estimated annual total cost (SAR)", f"{annual_total:,.0f}")
+if simple_payback is None:
+    st.warning("Simple payback is undefined because the estimated annual operating savings are not positive.")
+else:
+    st.write(f"**Simple payback:** {simple_payback:,.1f} years (investment / annual operating savings).")
+st.caption("Sensitivity calculations adjust tariff, discount rate and lifetime for the selected *precomputed* solution only. They do not rerun optimization, and exclude maintenance and tariff escalation.")
 
-st.dataframe(
-    insulation.round(2),
-    use_container_width=True,
-    hide_index=True
-)
-
-st.info(
-    "Results are based on EnergyPlus simulations. "
-    "The baseline and insulation scenarios use the same building and weather conditions."
-)
+with st.expander("Model transparency and scientific limitations (V3)"):
+    st.markdown("""- The building is hypothetical, with no measured energy data for calibration.
+- EnergyPlus IdealLoadsAirSystem provides thermal loads; electricity is estimated using a separate surrogate model.
+- Tariff 0.32 SAR/kWh, emission factor 0.55 kg CO₂/kWh, equipment assumptions and capital costs are study assumptions.
+- Annualized optimized cost includes capital recovery; the baseline has zero initial investment.
+- CO₂ is proportional to electricity under the constant emission factor, so it is not an independent objective.
+- Optimization results are precomputed. Sidebar filtering does not perform a new NSGA-II run.
+- EnergyPlus insulation levels are separate simulations. Level 3 may exceed the investment constraint for many configurations.
+- Results must not be presented as measured savings or as experimentally validated performance.""")
